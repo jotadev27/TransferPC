@@ -1,0 +1,32 @@
+# Python environments, bytecode and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+installer/
+*.egg-info/
+.venv/
+venv/
+.tox/
+.ruff_cache/
+# Private settings, keys and local tooling
+.env
+.env.*
+!.env.example
+.agents/
+.codex/
+*.pem
+*.key
+*.p12
+*.pfx
+# Editor and operating-system files
+*.log
+*.tmp
+*.swp
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
