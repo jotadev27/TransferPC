@@ -116,6 +116,87 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((self.destination / "same").read_bytes(), b"old")
         self.assert_no_stage()
 
+    def test_overwrite_same_size_files_requires_authorization(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        target = self.destination / item.name
+        target.write_bytes(b"old")
+        with self.assertRaisesRegex(TransferError, "already exists"):
+            TransferEngine().run([item], self.destination)
+        self.assertEqual(target.read_bytes(), b"old")
+        TransferEngine().run([item], self.destination, overwrite=True)
+        self.assertEqual(target.read_bytes(), b"new")
+        self.assertEqual(item.read_bytes(), b"new")
+        self.assert_no_stage()
+
+    def test_overwrite_move_removes_only_verified_source(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        (self.destination / item.name).write_bytes(b"old")
+        TransferEngine().run([item], self.destination, move=True, overwrite=True)
+        self.assertFalse(item.exists())
+        self.assertEqual((self.destination / item.name).read_bytes(), b"new")
+        self.assert_no_stage()
+
+    def test_overwrite_restores_old_destination_after_corruption(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        target = self.destination / item.name
+        target.write_bytes(b"old")
+        def corrupt(state):
+            if state.phase == "Verifying destination":
+                target.write_bytes(b"bad")
+        with self.assertRaisesRegex(TransferError, "checksum verification failed"):
+            TransferEngine(corrupt).run([item], self.destination, move=True, overwrite=True)
+        self.assertEqual(target.read_bytes(), b"old")
+        self.assertEqual(item.read_bytes(), b"new")
+        self.assert_no_stage()
+
+    def test_overwrite_cancel_restores_old_destination(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        target = self.destination / item.name
+        target.write_bytes(b"old")
+        cancel = threading.Event()
+        def progress(state):
+            if state.phase == "Verifying destination":
+                cancel.set()
+        with self.assertRaises(TransferCancelled):
+            TransferEngine(progress, cancel).run([item], self.destination, move=True, overwrite=True)
+        self.assertEqual(target.read_bytes(), b"old")
+        self.assertTrue(item.exists())
+        self.assert_no_stage()
+
+    def test_overwrite_rejects_changed_destination(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        target = self.destination / item.name
+        target.write_bytes(b"old")
+        def change(state):
+            if state.phase == "Verified":
+                target.write_bytes(b"changed")
+        with self.assertRaisesRegex(TransferError, "Destination changed"):
+            TransferEngine(change).run([item], self.destination, overwrite=True)
+        self.assertEqual(target.read_bytes(), b"changed")
+        self.assertEqual(item.read_bytes(), b"new")
+
+    def test_overwrite_rejects_symlink_directory_and_hardlink(self):
+        item = self.source / "same.txt"
+        item.write_bytes(b"new")
+        target = self.destination / item.name
+        target.symlink_to(item)
+        with self.assertRaises(TransferError):
+            TransferEngine().run([item], self.destination, overwrite=True)
+        target.unlink()
+        target.mkdir()
+        with self.assertRaises(TransferError):
+            TransferEngine().run([item], self.destination, overwrite=True)
+        target.rmdir()
+        target.hardlink_to(item)
+        with self.assertRaisesRegex(TransferError, "same file"):
+            TransferEngine().run([item], self.destination, move=True, overwrite=True)
+        self.assertTrue(item.exists())
+
     def test_missing_source_and_destination(self):
         with self.assertRaisesRegex(TransferError, "Source is unavailable"):
             build_plan([self.source / "missing"], self.destination)

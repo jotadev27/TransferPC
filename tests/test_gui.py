@@ -115,6 +115,34 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(window.status.text(), "1 item(s) selected.")
             window.close()
 
+    def test_overwrite_dialog_cancel_and_yes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            item = source / "same.txt"
+            item.write_bytes(b"new")
+            target = destination / item.name
+            target.write_bytes(b"old")
+            window = MainWindow()
+            window.destination_combo.addItem("Destination", destination)
+            window.destination_combo.setCurrentIndex(window.destination_combo.findData(destination))
+            window.add_paths([item])
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Cancel) as prompt:
+                window.start_transfer()
+            self.assertIsNone(window.worker)
+            self.assertEqual(target.read_bytes(), b"old")
+            self.assertEqual(prompt.call_args.args[-1], QMessageBox.Cancel)
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes), \
+                 patch.object(QMessageBox, "information"):
+                window.start_transfer()
+                self._wait_for_worker(window)
+            self.assertEqual(target.read_bytes(), b"new")
+            self.assertEqual(window.bar.value(), 100)
+            window.close()
+
     def test_bulk_copy_contents_without_selected_items(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

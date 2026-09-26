@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from .engine import Progress, TransferCancelled, TransferEngine, TransferError, build_plan
+from .engine import Progress, TransferCancelled, TransferConflict, TransferEngine, TransferError, build_plan
 from .locations import available_locations
 
 
@@ -64,17 +64,19 @@ class TransferWorker(QThread):
     failed = Signal(str)
     cancelled = Signal(str)
 
-    def __init__(self, sources: list[Path], destination: Path, move: bool) -> None:
+    def __init__(self, sources: list[Path], destination: Path, move: bool,
+                 overwrite: bool = False) -> None:
         super().__init__()
         self.sources = sources
         self.destination = destination
         self.move = move
+        self.overwrite = overwrite
         self.cancel_event = threading.Event()
 
     def run(self) -> None:
         try:
             TransferEngine(self.progress_changed.emit, self.cancel_event).run(
-                self.sources, self.destination, self.move)
+                self.sources, self.destination, self.move, self.overwrite)
         except TransferCancelled as exc:
             self.cancelled.emit(str(exc))
         except (TransferError, OSError) as exc:
@@ -437,6 +439,7 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return
         destination = self.destination_combo.currentData()
+        overwrite = False
         try:
             if destination is None:
                 raise TransferError("Select a destination directory.")
@@ -456,11 +459,28 @@ class MainWindow(QMainWindow):
                     raise TransferError("The source folder has no items to transfer.")
             else:
                 sources = list(self.queue)
-            build_plan(sources, destination)
+            try:
+                build_plan(sources, destination)
+            except TransferConflict as conflict:
+                names = "\n".join(conflict.names[:10])
+                if len(conflict.names) > 10:
+                    names += f"\n…and {len(conflict.names) - 10} more file(s)"
+                answer = QMessageBox.question(
+                    self, "Overwrite existing files?",
+                    f"These destination files already exist:\n\n{names}\n\n"
+                    "Do you want to overwrite them? Matching names and sizes do not "
+                    "guarantee identical contents. The previous files are kept until "
+                    "the new copies pass verification.",
+                    QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+                if answer != QMessageBox.Yes:
+                    return
+                overwrite = True
+                build_plan(sources, destination, overwrite=True)
         except (TransferError, OSError) as exc:
             QMessageBox.warning(self, "Cannot start transfer", str(exc))
             return
-        self.worker = TransferWorker(sources, destination, self.operation.currentText() == "Move")
+        self.worker = TransferWorker(sources, destination,
+                                     self.operation.currentText() == "Move", overwrite)
         self.worker.progress_changed.connect(self.on_progress)
         self.worker.succeeded.connect(self.on_success)
         self.worker.failed.connect(self.on_failure)

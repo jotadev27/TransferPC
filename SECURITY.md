@@ -24,8 +24,12 @@ ends. A cleanup failure is reported. The app runs with the current user's
 permissions and does not request elevated privileges.
 
 Copy uses SHA-256 verification before and after publication. Move removes
-sources only after verification and source validation. Existing destinations,
-symbolic links and special source files are rejected. Cancellation preserves
+sources only after verification and source validation. Existing regular files
+require an explicit overwrite confirmation, defaulting to Cancel. Replacement
+uses atomic exchange and retains the previous file until destination checks
+finish; a failure or cancellation before source removal restores it. If
+restoration fails, the backup staging path is reported and retained. Existing
+folders, symbolic links and special source files are rejected. Cancellation preserves
 sources before move cleanup begins. Once source removal begins, cancellation
 does not interrupt that removal halfway through.
 
