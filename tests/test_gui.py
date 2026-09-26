@@ -143,6 +143,45 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(window.bar.value(), 100)
             window.close()
 
+    def test_remove_selected_after_failure_resets_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            item = Path(temporary) / "file.txt"
+            item.write_text("data")
+            window = MainWindow()
+            window.add_paths([item])
+            self.assertEqual(len(window.queue_list.selectedItems()), 1)
+            with patch.object(QMessageBox, "critical"):
+                window.on_failure("Transfer failed")
+            window.queue_list.clearSelection()
+            remove = next(control for control in window.edit_controls if control.text() == "Remove selected")
+            remove.click()
+            self.assertFalse(window.queue)
+            self.assertEqual(window.queue_list.count(), 0)
+            self.assertEqual(window.phase.text(), "Ready to transfer")
+            self.assertEqual(window.bar.value(), 0)
+            self.assertIn("Add files", window.status.text())
+            self.assertTrue(item.exists())
+            window.close()
+
+    def test_remove_multiple_items_and_explain_missing_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            items = [Path(temporary) / name for name in ("first", "second")]
+            for item in items:
+                item.touch()
+            window = MainWindow()
+            window.add_paths(items)
+            self.assertEqual(len(window.queue_list.selectedItems()), 2)
+            window.queue_list.clearSelection()
+            window.remove_selected()
+            self.assertEqual(window.queue, items)
+            self.assertIn("Select items", window.status.text())
+            for index in range(window.queue_list.count()):
+                window.queue_list.item(index).setSelected(True)
+            window.remove_selected()
+            self.assertFalse(window.queue)
+            self.assertTrue(all(item.exists() for item in items))
+            window.close()
+
     def test_bulk_copy_contents_without_selected_items(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
