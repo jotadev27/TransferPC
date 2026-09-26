@@ -45,6 +45,45 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((self.destination / item.name).read_bytes(), data)
         self.assertTrue(any(0 < event.transferred < len(data) for event in events))
 
+    def test_progress_counts_both_checksum_passes(self):
+        item = self.source / "large.bin"
+        item.write_bytes(b"x" * (9 * 1024 * 1024))
+        events = []
+        TransferEngine(events.append).run([item], self.destination)
+        work = [event.work_done for event in events]
+        self.assertEqual(work, sorted(work))
+        self.assertEqual(events[-1].work_done, events[-1].work_total)
+        for phase in ("Copying", "Verifying", "Verifying destination"):
+            values = {event.work_done for event in events if event.phase == phase}
+            self.assertGreater(len(values), 1, phase)
+        copied = next(event for event in events if event.transferred == item.stat().st_size)
+        self.assertLess(copied.work_done / copied.work_total, 0.5)
+        self.assert_no_stage()
+
+    def test_empty_tree_and_move_progress_reach_exact_total(self):
+        for move in (False, True):
+            with self.subTest(move=move):
+                folder = self.source / f"folder-{move}"
+                (folder / "empty").mkdir(parents=True)
+                (folder / "zero.txt").touch()
+                events = []
+                TransferEngine(events.append).run([folder], self.destination, move=move)
+                self.assertGreater(events[-1].work_total, 0)
+                self.assertEqual(events[-1].work_done, events[-1].work_total)
+                self.assertEqual([e.work_done for e in events], sorted(e.work_done for e in events))
+                self.assertEqual(events[-1].phase, "Complete")
+                self.assertEqual(folder.exists(), not move)
+                self.assert_no_stage()
+
+    def test_cleanup_failure_never_reports_complete(self):
+        item = self.source / "file"
+        item.write_bytes(b"data")
+        events = []
+        with patch("transferpc.engine.shutil.rmtree", side_effect=OSError("cleanup failed")):
+            with self.assertRaisesRegex(TransferError, "Could not remove temporary"):
+                TransferEngine(events.append).run([item], self.destination)
+        self.assertNotIn("Complete", [event.phase for event in events])
+
     def test_nested_and_empty_directory(self):
         folder = self.source / "folder"
         (folder / "nested" / "empty").mkdir(parents=True)
@@ -174,7 +213,7 @@ class TransferTests(unittest.TestCase):
         folder = self.source / "empty"
         folder.mkdir()
         def progress(state):
-            if state.phase == "Preparing":
+            if state.phase == "Preparing" and folder.exists():
                 folder.rmdir()
         with self.assertRaisesRegex(TransferError, "Source folder is unavailable"):
             TransferEngine(progress).run([folder], self.destination, move=True)

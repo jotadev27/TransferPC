@@ -37,6 +37,8 @@ class Progress:
     elapsed: float
     speed: float
     phase: str
+    work_done: int = 0
+    work_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -205,6 +207,13 @@ class TransferEngine:
         self._check_cancel()
         stage = plan.destination / f".transferpc-{uuid.uuid4().hex}"
         copied = completed = 0
+        # Count the copy and both checksum passes, plus filesystem operations.
+        # Small operation units also give empty files/folders meaningful progress.
+        work_done = 0
+        work_total = (3 * plan.total_bytes + 3 * len(plan.directories)
+                      + len(plan.files) + len(plan.sources) + 4)
+        if move:
+            work_total += len(plan.files) + len(plan.directories) + 1
         started = time.monotonic()
         published: list[Path] = []
         hashes: dict[Path, bytes] = {}
@@ -223,7 +232,8 @@ class TransferEngine:
                 last_copy_time = now
                 last_copy_bytes = copied
             self.progress(Progress(copied, plan.total_bytes, completed, len(plan.files),
-                                   current, elapsed, copy_speed if phase == "Copying" else 0, phase))
+                                   current, elapsed, copy_speed if phase == "Copying" else 0,
+                                   phase, work_done, work_total))
 
         try:
             stage.mkdir(mode=0o700)
@@ -231,6 +241,8 @@ class TransferEngine:
             for directory in plan.directories:
                 self._check_cancel()
                 (stage / directory).mkdir(parents=True, exist_ok=True)
+                work_done += 1
+                update(str(directory), "Preparing")
             for entry in plan.files:
                 self._check_cancel()
                 target = stage / entry.relative
@@ -255,6 +267,7 @@ class TransferEngine:
                                     raise OSError(errno.EIO, "Write returned no data")
                                 view = view[written:]
                                 copied += written
+                                work_done += written
                                 update(str(entry.relative), "Copying")
                         os.fsync(writer.fileno())
                         current = os.fstat(reader.fileno())
@@ -272,18 +285,25 @@ class TransferEngine:
                             if not chunk:
                                 break
                             target_hash.update(chunk)
+                            work_done += len(chunk)
+                            update(str(entry.relative), "Verifying")
                     if source_hash.digest() != target_hash.digest():
                         raise TransferError(f"Checksum verification failed: {entry.relative}")
                     hashes[entry.relative] = source_hash.digest()
                     completed += 1
+                    work_done += 1
                     update(str(entry.relative), "Verified")
                 except OSError as exc:
                     raise TransferError(f"Failed to transfer {entry.source}: {exc.strerror or exc}") from exc
             self._check_cancel()
             _validate_sources(plan)
+            work_done += 1
             for directory in reversed(plan.directories):
                 _fsync_dir(stage / directory)
+                work_done += 1
+                update(str(directory), "Publishing")
             _fsync_dir(stage)
+            work_done += 1
             self._check_cancel()
             update("", "Publishing")
             for source in plan.sources:
@@ -291,13 +311,18 @@ class TransferEngine:
                 target = plan.destination / source.name
                 _publish(stage / source.name, target)
                 published.append(source)
+                work_done += 1
+                update(source.name, "Publishing")
             _fsync_dir(plan.destination)
+            work_done += 1
             update("", "Verifying destination")
             for directory in plan.directories:
                 self._check_cancel()
                 target = plan.destination / directory
                 if not stat.S_ISDIR(target.lstat().st_mode):
                     raise TransferError(f"Destination folder verification failed: {directory}")
+                work_done += 1
+                update(str(directory), "Verifying destination")
             verified_bytes = 0
             for entry in plan.files:
                 self._check_cancel()
@@ -313,6 +338,8 @@ class TransferEngine:
                         if not chunk:
                             break
                         digest.update(chunk)
+                        work_done += len(chunk)
+                        update(str(entry.relative), "Verifying destination")
                 if digest.digest() != hashes[entry.relative]:
                     raise TransferError(f"Destination checksum verification failed: {entry.relative}")
                 verified_bytes += info.st_size
@@ -323,12 +350,17 @@ class TransferEngine:
                 # Once published, cancellation cannot interrupt source removal halfway through.
                 update("", "Removing verified sources")
                 _validate_sources(plan)
+                work_done += 1
                 for entry in plan.files:
                     entry.source.unlink()
+                    work_done += 1
+                    update(str(entry.relative), "Removing verified sources")
                 for directory in sorted((path for path, _, _ in plan.directory_ids),
                                         key=lambda path: len(path.parts), reverse=True):
                     directory.rmdir()
-            update("", "Complete")
+                    work_done += 1
+                    update(directory.name, "Removing verified sources")
+            update("", "Finalizing")
         except TransferCancelled as exc:
             if published:
                 raise TransferCancelled(f"{exc} Some destination items may remain.") from exc
@@ -346,3 +378,5 @@ class TransferEngine:
                     shutil.rmtree(stage)
                 except OSError as exc:
                     raise TransferError(f"Could not remove temporary transfer data at {stage}: {exc}") from exc
+        work_done += 1
+        update("", "Complete")

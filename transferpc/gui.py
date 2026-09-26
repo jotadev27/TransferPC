@@ -235,11 +235,12 @@ class MainWindow(QMainWindow):
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.bar.setFormat("%p%")
+        self.bar.setToolTip("Overall progress: copying, checksum verification and finalization")
         self.bytes_label = QLabel("Transferred: 0 B / 0 B")
         self.remaining = QLabel("Remaining: 0 B")
         self.speed = QLabel("Speed: —")
         self.elapsed = QLabel("Elapsed: 00:00:00")
-        self.eta = QLabel("ETA: —")
+        self.eta = QLabel("Copy ETA: —")
         self.files = QLabel("Files: 0 / 0")
         progress_layout.addWidget(self.phase)
         progress_layout.addWidget(self.current)
@@ -302,7 +303,7 @@ class MainWindow(QMainWindow):
         self.remaining.setText("Remaining: 0 B")
         self.speed.setText("Speed: —")
         self.elapsed.setText("Elapsed: 00:00:00")
-        self.eta.setText("ETA: —")
+        self.eta.setText("Copy ETA: —")
         self.files.setText("Files: 0 / 0")
         self.status.setStyleSheet("")
         self.status.setText("Ready to transfer.")
@@ -481,9 +482,9 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_progress(self, progress: Progress) -> None:
-        percent = int(progress.transferred * 100 / progress.total) if progress.total else 0
-        # Writing all bytes can precede staging and published-destination checks.
-        # Only the success signal may display the final 100 percent.
+        percent = progress.work_done * 100 // progress.work_total if progress.work_total else 0
+        # Count real copy, verification and filesystem work. Only the worker's
+        # success signal may display 100%, after temporary staging is removed.
         self.bar.setValue(min(percent, 99))
         stage = {
             "Preparing": "Preparing…",
@@ -493,6 +494,7 @@ class MainWindow(QMainWindow):
             "Publishing": "Verifying…",
             "Verifying destination": "Verifying destination…",
             "Removing verified sources": "Finishing move…",
+            "Finalizing": "Finalizing…",
             "Complete": "Finalizing…",
         }.get(progress.phase, progress.phase)
         self.phase.setText(stage)
@@ -502,7 +504,7 @@ class MainWindow(QMainWindow):
         self.remaining.setText(f"Remaining: {format_size(remaining)}")
         self.speed.setText(f"Speed: {format_size(int(progress.speed))}/s" if progress.speed else "Speed: —")
         self.elapsed.setText(f"Elapsed: {format_time(progress.elapsed)}")
-        self.eta.setText(f"ETA: {format_time(remaining / progress.speed)}" if progress.speed and remaining else "ETA: —")
+        self.eta.setText(f"Copy ETA: {format_time(remaining / progress.speed)}" if progress.speed and remaining else "Copy ETA: —")
         self.files.setText(f"Files: {progress.completed_files} / {progress.total_files}")
 
     def on_success(self) -> None:
