@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TransferPC
+Comment=Verified local file transfers
+Exec=/usr/bin/transferpc
+TryExec=/usr/bin/transferpc
+Icon=transferpc
+Terminal=false
+Categories=Utility;FileTools;
+StartupNotify=true
+StartupWMClass=transferpc
