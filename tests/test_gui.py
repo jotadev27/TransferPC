@@ -178,11 +178,22 @@ class GuiTests(unittest.TestCase):
     def test_verification_never_displays_one_hundred_percent(self):
         window = MainWindow()
         for phase in ("Copying", "Verifying", "Publishing", "Verifying destination", "Removing verified sources", "Complete"):
-            window.on_progress(Progress(100, 100, 1, 1, "file.txt", 1.0, 0.0, phase))
+            window.on_progress(Progress(100, 100, 1, 1, "file.txt", 1.0, 0.0, phase, 310, 310))
             self.assertLess(window.bar.value(), 100, phase)
         with patch.object(QMessageBox, "information"):
             window.on_success()
         self.assertEqual(window.bar.value(), 100)
+        window.close()
+
+    def test_bar_advances_while_all_bytes_are_already_copied(self):
+        window = MainWindow()
+        for work_done, phase in ((100, "Copying"), (150, "Verifying"),
+                                 (200, "Verified"), (250, "Verifying destination")):
+            window.on_progress(Progress(100, 100, 1, 1, "file.txt", 1.0, 0.0,
+                                        phase, work_done, 310))
+            self.assertEqual(window.bar.value(), work_done * 100 // 310)
+        self.assertEqual(window.bytes_label.text(), "Transferred: 100 B / 100 B")
+        self.assertEqual(window.eta.text(), "Copy ETA: —")
         window.close()
 
     def test_refresh_requeries_locations_and_preserves_valid_selection(self):
