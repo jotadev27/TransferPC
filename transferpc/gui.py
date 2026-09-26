@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
@@ -215,6 +215,7 @@ class MainWindow(QMainWindow):
         queue_header.addWidget(remove)
         normal_layout.addLayout(queue_header)
         self.queue_list = QListWidget()
+        self.queue_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.queue_list.setMinimumHeight(80)
         normal_layout.addWidget(self.queue_list, 1)
         outer.addWidget(self.normal_group, 1)
@@ -426,14 +427,24 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, str(path))
             item.setToolTip(str(path))
             self.queue_list.addItem(item)
+            item.setSelected(True)
             self.status.setText(f"{len(self.queue)} item(s) selected.")
 
     def remove_selected(self) -> None:
-        for item in self.queue_list.selectedItems():
+        if self.worker and self.worker.isRunning():
+            return
+        selected = self.queue_list.selectedItems()
+        if not selected and self.queue_list.count() == 1:
+            selected = [self.queue_list.item(0)]
+        if not selected and self.queue:
+            self.status.setText("Select items in the list to remove them. Use Ctrl or Shift for multiple items.")
+            self.queue_list.setFocus()
+            return
+        for item in selected:
             self._reset_result()
             self.queue.remove(Path(item.data(Qt.UserRole)))
             self.queue_list.takeItem(self.queue_list.row(item))
-        self.status.setText(f"{len(self.queue)} item(s) selected.")
+        self._update_ready_status()
 
     def start_transfer(self) -> None:
         if self.worker and self.worker.isRunning():
