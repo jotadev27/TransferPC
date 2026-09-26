@@ -7,6 +7,7 @@ import hashlib
 import os
 import shutil
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -17,6 +18,7 @@ from typing import Callable
 CHUNK_SIZE = 4 * 1024 * 1024
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
+_RENAME_EXCHANGE = 2
 
 
 class TransferError(Exception):
@@ -25,6 +27,14 @@ class TransferError(Exception):
 
 class TransferCancelled(TransferError):
     pass
+
+
+class TransferConflict(TransferError):
+    """Destination files require explicit replacement authorization."""
+
+    def __init__(self, names: tuple[str, ...]) -> None:
+        self.names = names
+        super().__init__("An item already exists at the destination: " + ", ".join(names))
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,7 @@ class Plan:
     directories: tuple[Path, ...]
     directory_ids: tuple[tuple[Path, int, int], ...]
     total_bytes: int
+    replacements: tuple[tuple[Path, int, int, int, int], ...] = ()
 
 
 def _walk_error(exc: OSError) -> None:
@@ -85,7 +96,7 @@ def _directory_info(path: Path) -> os.stat_result:
     return info
 
 
-def build_plan(sources: list[Path], destination: Path) -> Plan:
+def build_plan(sources: list[Path], destination: Path, overwrite: bool = False) -> Plan:
     """Snapshot the queue and reject unsafe or conflicting paths."""
     if not sources:
         raise TransferError("Add at least one file or folder first.")
@@ -99,6 +110,7 @@ def build_plan(sources: list[Path], destination: Path) -> Plan:
     files: list[FileEntry] = []
     directories: list[Path] = []
     directory_ids: list[tuple[Path, int, int]] = []
+    replacements: list[tuple[Path, int, int, int, int]] = []
     for item in sources:
         source = Path(os.path.abspath(item))
         try:
@@ -119,8 +131,17 @@ def build_plan(sources: list[Path], destination: Path) -> Plan:
             raise TransferError(f"Queued items overlap: {source}")
         if dest == source or (stat.S_ISDIR(info.st_mode) and dest.is_relative_to(source)):
             raise TransferError("Destination cannot be inside a source folder.")
-        if source.parent == dest or (dest / source.name).exists() or (dest / source.name).is_symlink():
-            raise TransferError(f"An item already exists at the destination: {source.name}")
+        if source.parent == dest:
+            raise TransferError("Source and destination refer to the same item.")
+        target = dest / source.name
+        if target.exists() or target.is_symlink():
+            target_info = _regular_info(target)
+            if not stat.S_ISREG(info.st_mode):
+                raise TransferError("Existing folders cannot be replaced. Choose another destination.")
+            if (info.st_dev, info.st_ino) == (target_info.st_dev, target_info.st_ino):
+                raise TransferError("Source and destination refer to the same file.")
+            replacements.append((target, target_info.st_dev, target_info.st_ino,
+                                 target_info.st_size, target_info.st_mtime_ns))
         unique.append(source)
         if stat.S_ISREG(info.st_mode):
             files.append(FileEntry(source, Path(source.name), info.st_size, info.st_dev, info.st_ino, info.st_mtime_ns))
@@ -140,6 +161,8 @@ def build_plan(sources: list[Path], destination: Path) -> Plan:
                     files.append(FileEntry(child, relative, child_info.st_size, child_info.st_dev, child_info.st_ino, child_info.st_mtime_ns))
         else:
             raise TransferError(f"Unsupported source type: {source}")
+    if replacements and not overwrite:
+        raise TransferConflict(tuple(path.name for path, *_ in replacements))
     try:
         free = shutil.disk_usage(dest).free
     except OSError as exc:
@@ -147,7 +170,8 @@ def build_plan(sources: list[Path], destination: Path) -> Plan:
     total = sum(entry.size for entry in files)
     if total > free:
         raise TransferError(f"Insufficient destination space: need {total:,} bytes; available {free:,} bytes.")
-    return Plan(tuple(unique), dest, tuple(files), tuple(directories), tuple(directory_ids), total)
+    return Plan(tuple(unique), dest, tuple(files), tuple(directories), tuple(directory_ids),
+                total, tuple(replacements))
 
 
 def _validate_sources(plan: Plan) -> None:
@@ -184,10 +208,11 @@ def _fsync_dir(path: Path) -> None:
         os.close(descriptor)
 
 
-def _publish(source: Path, target: Path) -> None:
+def _publish(source: Path, target: Path, exchange: bool = False) -> None:
     # Linux renameat2 prevents a concurrent process from replacing an existing item.
     libc = ctypes.CDLL(None, use_errno=True)
-    if libc.renameat2(_AT_FDCWD, os.fsencode(source), _AT_FDCWD, os.fsencode(target), _RENAME_NOREPLACE) != 0:
+    flags = _RENAME_EXCHANGE if exchange else _RENAME_NOREPLACE
+    if libc.renameat2(_AT_FDCWD, os.fsencode(source), _AT_FDCWD, os.fsencode(target), flags) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(target))
 
@@ -202,8 +227,9 @@ class TransferEngine:
         if self.cancel.is_set():
             raise TransferCancelled("Transfer cancelled. Source files were kept.")
 
-    def run(self, sources: list[Path], destination: Path, move: bool = False) -> None:
-        plan = build_plan(sources, destination)
+    def run(self, sources: list[Path], destination: Path, move: bool = False,
+            overwrite: bool = False) -> None:
+        plan = build_plan(sources, destination, overwrite)
         self._check_cancel()
         stage = plan.destination / f".transferpc-{uuid.uuid4().hex}"
         copied = completed = 0
@@ -216,6 +242,10 @@ class TransferEngine:
             work_total += len(plan.files) + len(plan.directories) + 1
         started = time.monotonic()
         published: list[Path] = []
+        replacements = {path: identity for path, *identity in plan.replacements}
+        replaced: list[tuple[Path, Path, int, int]] = []
+        removal_started = False
+        preserve_stage = False
         hashes: dict[Path, bytes] = {}
         last_copy_time = started
         last_copy_bytes = 0
@@ -309,7 +339,16 @@ class TransferEngine:
             for source in plan.sources:
                 self._check_cancel()
                 target = plan.destination / source.name
-                _publish(stage / source.name, target)
+                staged = stage / source.name
+                if target in replacements:
+                    info = _regular_info(target)
+                    if [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns] != replacements[target]:
+                        raise TransferError(f"Destination changed before replacement: {target.name}")
+                    new_info = staged.lstat()
+                    _publish(staged, target, exchange=True)
+                    replaced.append((staged, target, new_info.st_dev, new_info.st_ino))
+                else:
+                    _publish(staged, target)
                 published.append(source)
                 work_done += 1
                 update(source.name, "Publishing")
@@ -351,6 +390,7 @@ class TransferEngine:
                 update("", "Removing verified sources")
                 _validate_sources(plan)
                 work_done += 1
+                removal_started = True
                 for entry in plan.files:
                     entry.source.unlink()
                     work_done += 1
@@ -373,7 +413,21 @@ class TransferEngine:
             suffix = " Some destination items may remain; inspect both locations before retrying." if published else ""
             raise TransferError(f"Transfer failed: {exc.strerror or exc}.{suffix}") from exc
         finally:
-            if stage.exists():
+            # Keep the previous destination until every published file passes
+            # verification. Restore it on failure before move deletion begins.
+            failed = sys.exc_info()[0] is not None
+            if failed and not removal_started:
+                for backup, target, device, inode in reversed(replaced):
+                    try:
+                        info = _regular_info(target)
+                        if (info.st_dev, info.st_ino) != (device, inode):
+                            raise TransferError("Replacement destination changed during rollback.")
+                        _publish(backup, target, exchange=True)
+                        _fsync_dir(plan.destination)
+                    except (OSError, TransferError) as exc:
+                        preserve_stage = True
+                        raise TransferError(f"Could not restore previous file; backup kept at {backup}: {exc}") from exc
+            if stage.exists() and not preserve_stage:
                 try:
                     shutil.rmtree(stage)
                 except OSError as exc:
