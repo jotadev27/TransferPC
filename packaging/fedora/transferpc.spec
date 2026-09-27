@@ -3,7 +3,7 @@ Version:        1.0
 Release:        1%{?dist}
 Summary:        Verified local file transfers
 License:        MIT
-Packager:       TransferPC
+Packager:       jotadev27
 BuildArch:      noarch
 Source0:        %{name}-%{version}.tar.gz
 Requires:       python3 >= 3.10

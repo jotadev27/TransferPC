@@ -49,7 +49,7 @@ def build_packages(bundle: Path) -> list[Path]:
     control.mkdir()
     (control / "control").write_text(
         "Package: transferpc\nVersion: 1.0-1\nSection: utils\nPriority: optional\n"
-        "Architecture: amd64\nMaintainer: TransferPC <transferpc@users.noreply.github.com>\n"
+        "Architecture: amd64\nMaintainer: jotadev27 <202715232+jotadev27@users.noreply.github.com>\n"
         f"Installed-Size: {(size + 1023) // 1024}\n"
         "Depends: libc6 (>= 2.35), libgl1, libegl1\n"
         "Homepage: https://github.com/jotadev27/TransferPC\n"
@@ -67,7 +67,7 @@ def build_packages(bundle: Path) -> list[Path]:
         "pkgname = transferpc\npkgbase = transferpc\nxdata = pkgtype=pkg\npkgver = 1.0-1\n"
         "pkgdesc = Verified local file transfers for Linux\n"
         "url = https://github.com/jotadev27/TransferPC\n"
-        "builddate = 1790380800\npackager = TransferPC\n"
+        "builddate = 1790380800\npackager = jotadev27\n"
         f"size = {size}\narch = x86_64\nlicense = MIT\nlicense = LGPL-3.0-only\nlicense = PSF-2.0\n"
         "depend = glibc>=2.35\ndepend = libglvnd\n")
     arch_tar = BUILD / "transferpc.tar"

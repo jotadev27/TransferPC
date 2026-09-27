@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "TransferPC"
 version = "1.0"
 description = "Verified local file transfers for Linux"
+authors = [{name = "jotadev27", email = "202715232+jotadev27@users.noreply.github.com"}]
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.10"
