@@ -12,7 +12,12 @@ SECRET = re.compile(rb"(?:(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_
 
 def private_markers() -> tuple[bytes, ...]:
     home = Path.home()
-    return (str(home).encode(), home.name.encode()) if len(home.name) >= 4 else (str(home).encode(),)
+    # Generic container account names also occur in library text and notices.
+    if home.name in {"root", "nobody"}:
+        return ()
+    if len(home.name) < 4:
+        return (str(home).encode(),)
+    return (str(home).encode(), home.name.encode())
 
 
 def check_data(data: bytes) -> None:

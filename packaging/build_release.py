@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import os
 import platform
 import shutil
@@ -31,11 +32,13 @@ Verified local file transfers for Linux.
 
 ## Downloads
 - transferpc-1.0-1.fc44.noarch.rpm: Fedora 44 installer using distribution dependencies.
+- transferpc_1.0-1_amd64.deb: Ubuntu 22.04+ installer with bundled Python and Qt.
+- transferpc-1.0-1-x86_64.pkg.tar.zst: Manjaro/Arch installer with bundled Python and Qt.
 - transferpc-1.0-linux-x86_64-portable.tar.gz: bundled Python and Qt; extract and run ./transferpc from the TransferPC-1.0 folder.
 - SHA256SUMS: verify downloads with sha256sum -c SHA256SUMS.
 
 ## Compatibility and limitations
-The portable targets Linux x86_64 with glibc 2.43 or newer and a compatible desktop session. It was built and checked on Fedora 44; other distributions were not tested. For older systems, use the source installation with Python 3.10+ and PySide6 6.6+.
+The bundled packages and portable target Linux x86_64 with glibc 2.35 or newer and a compatible desktop session. The portable is built on Ubuntu 22.04. Ubuntu container and Fedora startup checks are automated; the pacman package is checked in an Arch container. A Manjaro desktop has not been tested. For older systems or other architectures, use the source installation with Python 3.10+ and PySide6 6.6+.
 Existing folders, symbolic links and special files cannot be overwritten. Keep sources unchanged during a transfer. Wait for Transfer verified and 100% before disconnecting storage. Errors after publication can leave destination items; inspect both locations before retrying. If rollback fails, the previous file's backup path is reported and retained. Cancellation cannot interrupt source removal once final Move cleanup starts.
 Integrity verification does not scan files for malware. A public repository does not grant access to the maintainer's computer; future code and dependency changes still require review.
 
@@ -72,6 +75,43 @@ def copy_notices(bundle: Path) -> None:
     licenses = bundle / "licenses"
     licenses.mkdir(exist_ok=True)
     # Include the installed distribution's notices for every bundled library.
+    if shutil.which("rpm") and Path("/etc/fedora-release").exists():
+        copy_rpm_notices(bundle, licenses)
+    else:
+        shutil.copytree("/usr/share/common-licenses", licenses / "common", dirs_exist_ok=True)
+        shutil.copytree(BUILD / "qt-license-texts", licenses / "Qt", dirs_exist_ok=True)
+        # Debian's copyright files include notices for distribution libraries.
+        for path in Path("/usr/share/doc").glob("*/copyright"):
+            destination = licenses / "distribution" / path.parent.name / "copyright"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+    import importlib.metadata
+    distributions = ["pyinstaller", "altgraph", "pyinstaller-hooks-contrib"]
+    if not Path("/etc/fedora-release").exists():
+        distributions += ["PySide6", "PySide6_Essentials", "PySide6_Addons", "shiboken6"]
+    for distribution in distributions:
+        package = importlib.metadata.distribution(distribution)
+        for file in package.files or []:
+            if ("license" in str(file).lower() or "copying" in file.name.lower()) and ".." not in file.parts:
+                path = Path(package.locate_file(file))
+                if path.is_file():
+                    destination = licenses / distribution / Path(str(file))
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(path, destination)
+    (bundle / "RUN.txt").write_text(
+        "TransferPC v1.0 — Linux x86_64 portable\n\n"
+        "Extract the complete folder, then run ./transferpc.\n"
+        "Keep _internal/ beside the executable. No app installation, root\n"
+        "privileges, external Python or external PySide6 are required.\n"
+        "Built on Ubuntu 22.04: requires Linux x86_64, glibc 2.35 or newer,\n"
+        "OpenGL/EGL desktop libraries and a working desktop session.\n"
+        "Targets Ubuntu 22.04+, modern Fedora and Manjaro/Arch.\n"
+        "Shared LGPL libraries can be replaced inside _internal/.\n"
+        "See LICENSE, THIRD_PARTY_NOTICES.md and licenses/ for notices.\n",
+        encoding="utf-8")
+
+
+def copy_rpm_notices(bundle: Path, licenses: Path) -> None:
     owners = {"python3-libs", "python3-pyside6", "python3-shiboken6"}
     search = (Path("/usr/lib64"), Path("/usr/lib"))
     for binary in (bundle / "_internal").rglob("*"):
@@ -94,28 +134,6 @@ def copy_notices(bundle: Path) -> None:
                 destination = licenses / owner / path.relative_to("/usr")
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, destination)
-    # PyInstaller is installed only in the ignored packaging environment.
-    import importlib.metadata
-    for distribution in ("pyinstaller", "altgraph", "pyinstaller-hooks-contrib"):
-        package = importlib.metadata.distribution(distribution)
-        for file in package.files or []:
-            if "license" in file.name.lower() or "copying" in file.name.lower():
-                path = Path(package.locate_file(file))
-                if path.is_file():
-                    destination = licenses / distribution / file.name
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(path, destination)
-    (bundle / "RUN.txt").write_text(
-        "TransferPC v1.0 — Linux x86_64 portable\n\n"
-        "Extract the complete folder, then run ./transferpc.\n"
-        "Keep _internal/ beside the executable. No app installation, root\n"
-        "privileges, external Python or external PySide6 are required.\n"
-        "Built on Fedora 44: requires compatible Linux x86_64, glibc 2.43\n"
-        "or newer, and a working desktop session. Older distributions are\n"
-        "not supported by this binary; use the source installation instead.\n"
-        "Shared LGPL libraries can be replaced inside _internal/.\n"
-        "See LICENSE, THIRD_PARTY_NOTICES.md and licenses/ for notices.\n",
-        encoding="utf-8")
 
 
 def archive_portable(bundle: Path) -> Path:
@@ -135,12 +153,21 @@ def archive_portable(bundle: Path) -> Path:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--portable-only", action="store_true",
+                        help="Build the portable and Ubuntu/Manjaro packages in the Ubuntu container")
+    arguments = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise SystemExit("This release builder targets Fedora Linux x86_64.")
+        raise SystemExit("This release builder targets Linux x86_64.")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("PYINSTALLER_CONFIG_DIR", str(BUILD / "pyinstaller-cache"))
     OUTPUT.mkdir(exist_ok=True)
-    run(sys.executable, "packaging/fedora/build_rpm.py")
+    if not arguments.portable_only:
+        run(sys.executable, "packaging/fedora/build_rpm.py")
+        run("bash", "packaging/portable/build_container.sh")
+        return
+    if platform.libc_ver()[1] != "2.35":
+        raise SystemExit("Build the compatible portable in the Ubuntu 22.04 container (glibc 2.35).")
     stage_portable()
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
         "--distpath", str(BUILD / "portable"), "--workpath", str(BUILD / "pyinstaller"),
@@ -152,7 +179,9 @@ def main() -> None:
         if path.is_file():
             check_data(path.read_bytes())
     portable = archive_portable(bundle)
-    artifacts = [*sorted(OUTPUT.glob(f"transferpc-{VERSION}-*.rpm")), portable]
+    from build_native import build_packages
+    native = build_packages(bundle)
+    artifacts = [*sorted(OUTPUT.glob(f"transferpc-{VERSION}-*.rpm")), portable, *native]
     sums = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in artifacts]
     (OUTPUT / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
     (OUTPUT / "TransferPC-v1.0-release.txt").write_text(RELEASE_NOTES, encoding="utf-8")

@@ -52,6 +52,9 @@ Before publishing, run `python3 packaging/audit_public.py` and review
 `git status --short` and `git diff --cached`. The audit checks tracked blobs
 throughout local history for the current home path, username and common
 credential patterns. It is a useful check, not a replacement for review.
+Generic root/nobody identities inside disposable build containers are excluded
+from personal-identity matching; the public audit runs under the maintainer's
+normal account and still checks that account's actual home and username.
 Release checksums detect changes relative to the published checksum file;
 they do not prove authenticity if both files are replaced by an attacker.
 
