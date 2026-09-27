@@ -5,6 +5,7 @@ import hashlib
 import io
 import marshal
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -136,11 +137,59 @@ def main() -> None:
             executable = Path(temporary) / "TransferPC-1.0/transferpc"
             inspect_executable(executable)
             smoke_test([str(executable)])
+            for binary in executable.parent.rglob("*"):
+                if not binary.is_file() or binary.is_symlink():
+                    continue
+                with binary.open("rb") as stream:
+                    if stream.read(4) != b"\x7fELF":
+                        continue
+                symbols = subprocess.check_output(["readelf", "--version-info", str(binary)])
+                versions = [tuple(map(int, version.split(b".")))
+                            for version in re.findall(rb"GLIBC_([0-9]+\.[0-9]+)", symbols)]
+                if versions and max(versions) > (2, 35):
+                    raise ValueError(f"Portable needs a newer glibc: {binary.name}")
+    deb = OUTPUT / "transferpc_1.0-1_amd64.deb"
+    members = subprocess.check_output(["ar", "t", str(deb)]).decode().splitlines()
+    if members != ["debian-binary", "control.tar.gz", "data.tar.gz"]:
+        raise ValueError("Unexpected Debian package members")
+    control = subprocess.check_output(["ar", "p", str(deb), "control.tar.gz"])
+    with tarfile.open(fileobj=io.BytesIO(control)) as archive:
+        metadata = archive.extractfile("control").read()
+        if b"Version: 1.0-1\n" not in metadata or b"Architecture: amd64\n" not in metadata:
+            raise ValueError("Unexpected Debian package metadata")
+        check_data(metadata)
+    data = subprocess.check_output(["ar", "p", str(deb), "data.tar.gz"])
+    verify_native_tar(data, compressed=True)
+    arch = OUTPUT / "transferpc-1.0-1-x86_64.pkg.tar.zst"
+    data = subprocess.check_output(["zstd", "-q", "-d", "-c", str(arch)])
+    verify_native_tar(data, compressed=False)
     notes = (OUTPUT / "TransferPC-v1.0-release.txt").read_bytes()
     check_data(notes)
     if b"v1.0" not in notes or b"1.0.0" in notes:
         raise ValueError("Unexpected release-note version")
-    print("Release audit passed: checksums, RPM payload and metadata, portable ownership, embedded code and standalone startup.")
+    print("Release audit passed: checksums, RPM/DEB/pacman payloads, metadata, ownership, embedded code, glibc 2.35 baseline and standalone startup.")
+
+
+def verify_native_tar(data: bytes, compressed: bool) -> None:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz" if compressed else "r:") as archive:
+        for item in archive:
+            if item.name.startswith("/") or ".." in Path(item.name).parts:
+                raise ValueError("Unsafe native package path")
+            if (item.uid, item.gid, item.uname, item.gname) != (0, 0, "root", "root"):
+                raise ValueError("Native package contains local ownership")
+            check_data(item.name.encode())
+            if item.isfile():
+                contents = archive.extractfile(item).read()
+                check_data(contents)
+                if item.name == ".PKGINFO":
+                    for field in (b"pkgver = 1.0-1\n", b"arch = x86_64\n", b"xdata = pkgtype=pkg\n"):
+                        if field not in contents:
+                            raise ValueError("Unexpected pacman metadata")
+        with tempfile.TemporaryDirectory(prefix="transferpc-native-") as temporary:
+            archive.extractall(temporary, filter="data")
+            root = Path(temporary)
+            inspect_executable(root / "opt/transferpc/transferpc")
+            smoke_test([str(root / "opt/transferpc/transferpc")])
 
 
 if __name__ == "__main__":
