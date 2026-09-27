@@ -29,24 +29,59 @@
 
 ## Install or run
 
-### Fedora RPM
+TransferPC targets **Ubuntu 22.04+, Fedora and Manjaro/Arch Linux**.
+Release binaries are for **x86_64**. The bundled packages and portable require
+**glibc 2.35 or newer**, OpenGL/EGL libraries and a desktop session.
 
-Download the `transferpc-1.0-1.fc44.noarch.rpm` release asset. On Fedora 44:
+The following commands download and install **v1.0**. They work after the
+maintainer publishes the release assets on GitHub. Choose the block for your
+system; run it from a directory where you want to keep the downloaded package.
+
+### Ubuntu 22.04 or newer
 
 ```bash
+sudo apt update && sudo apt install -y curl
+curl -fLO https://github.com/jotadev27/TransferPC/releases/download/v1.0/transferpc_1.0-1_amd64.deb
+sudo apt install ./transferpc_1.0-1_amd64.deb
+transferpc
+```
+
+Python and Qt are included in the DEB. Remove it with
+`sudo apt remove transferpc`.
+
+### Manjaro / Arch Linux
+
+```bash
+sudo pacman -Syu --needed curl
+curl -fLO https://github.com/jotadev27/TransferPC/releases/download/v1.0/transferpc-1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./transferpc-1.0-1-x86_64.pkg.tar.zst
+transferpc
+```
+
+Python and Qt are included in the pacman package. Remove it with
+`sudo pacman -R transferpc`.
+
+### Fedora
+
+```bash
+sudo dnf install -y curl
+curl -fLO https://github.com/jotadev27/TransferPC/releases/download/v1.0/transferpc-1.0-1.fc44.noarch.rpm
 sudo dnf install ./transferpc-1.0-1.fc44.noarch.rpm
 transferpc
 ```
 
-The installer adds TransferPC to the application menu and uses Fedora's Python
-and PySide6 packages. It does not depend on a checkout or virtual environment.
-Remove it with `sudo dnf remove transferpc`.
+The RPM uses Fedora's Python 3.10+ and PySide6 6.6+ packages and was built on
+Fedora 44. Remove it with `sudo dnf remove transferpc`.
 
-### Linux portable
+All installed packages add TransferPC to the application menu. They do not
+require a source checkout or a development environment after installation.
 
-Download `transferpc-1.0-linux-x86_64-portable.tar.gz`, then:
+### Portable: Ubuntu, Fedora and Manjaro
+
+With `curl` and `tar` available:
 
 ```bash
+curl -fLO https://github.com/jotadev27/TransferPC/releases/download/v1.0/transferpc-1.0-linux-x86_64-portable.tar.gz
 tar -xzf transferpc-1.0-linux-x86_64-portable.tar.gz
 cd TransferPC-1.0
 ./transferpc
@@ -54,14 +89,36 @@ cd TransferPC-1.0
 
 Keep the complete extracted folder together, including `_internal/`. Python
 and Qt are bundled; no application installation or root privileges are needed.
-This binary is built on Fedora 44 for x86_64 and needs **glibc 2.43 or newer**
-and a compatible desktop session. It has been checked on the build system;
-compatibility with other distributions has not been tested. Use the source
-installation on older systems.
+The portable is built on Ubuntu 22.04 instead of Fedora so it can run on older
+Linux systems. It requires glibc 2.35+; Alpine/musl systems are not supported.
 
-### From source
+Validation includes Ubuntu 22.04 container tests, Fedora startup checks and
+pacman package checks in an Arch container. A full Manjaro desktop session has
+not been tested. Desktop drivers and library availability can still vary.
 
-Requires Linux, Python 3.10 or newer and PySide6 6.6 or newer:
+### Install from source before release assets are available
+
+Requires Python 3.10+. Install the tools for your distribution first:
+
+Ubuntu:
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-venv
+```
+
+Manjaro / Arch:
+
+```bash
+sudo pacman -Syu --needed git python python-pip
+```
+
+Fedora:
+
+```bash
+sudo dnf install -y git python3 python3-pip
+```
+
+Then use the same commands on any of the three systems:
 
 ```bash
 git clone https://github.com/jotadev27/TransferPC.git
@@ -70,6 +127,10 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m transferpc
 ```
+
+This route installs PySide6 in an isolated environment and does not modify
+system Python. Other architectures depend on suitable Python and PySide6
+packages being available.
 
 ## Using TransferPC
 
@@ -133,22 +194,35 @@ Run the automated transfer, UI and runtime-boundary checks:
 python3 packaging/audit_public.py
 ```
 
-On Fedora 44, release builds require `rpm-build`, `desktop-file-utils`, system
-Python and PySide6. Prepare the isolated build environment, then build:
+On Fedora 44, release builds require `rpm-build`, `desktop-file-utils`,
+`podman`, system Python and PySide6. The RPM is built on the host; the portable,
+Ubuntu DEB and Manjaro package are built inside an official Ubuntu 22.04
+container. The container downloads its own build dependencies.
 
 ```bash
 python3 -m venv --system-site-packages build/packaging-venv
 build/packaging-venv/bin/python -m pip install 'PyInstaller==6.22.3'
 build/packaging-venv/bin/python packaging/build_release.py
-build/packaging-venv/bin/python packaging/verify_release.py
 ```
 
 Output goes to **`installer/`**, which Git ignores. Build intermediates stay
 in the ignored `build/` directory. Packaging uses explicit source payloads,
-generic ownership metadata and bundled license notices. The RPM can also be
-built separately with `python3 packaging/fedora/build_rpm.py`.
-The verifier checks payloads, metadata, embedded code and standalone startup
-for the extracted RPM and portable without installing either on the host.
+generic ownership metadata and bundled license notices. The container runs
+the automated tests and audits the generated payloads, embedded code, glibc
+requirements and standalone startup. It mounts the project as read-only,
+with only `build/` and `installer/` writable.
+
+To rebuild the bundled releases separately:
+
+```bash
+bash packaging/portable/build_container.sh
+```
+
+The RPM can be built separately with
+`python3 packaging/fedora/build_rpm.py`. Run the release verifier in the build
+container, where Python matches the bundled bytecode version. PyInstaller
+recommends building on the oldest Linux baseline you intend to support;
+see its [Linux portability guidance](https://www.pyinstaller.org/en/stable/usage.html#gnu-linux).
 
 Release assets include a `SHA256SUMS` file. Verify downloaded assets from the
 directory containing them:
